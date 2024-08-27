@@ -1,6 +1,6 @@
 export const isBrowser = typeof window != 'undefined';
 
-export const isDev = process.env.NODE_ENV === 'development';
+export const isDev = true //process.env.NODE_ENV === 'development';
 
 export const isTouchDevice =
   typeof window !== 'undefined' && 'ontouchstart' in window;

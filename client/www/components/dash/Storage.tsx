@@ -644,38 +644,6 @@ export function StorageEnabledTab({
   );
 }
 
-function StorageDisabledTab({
-  className,
-  app,
-}: {
-  className?: string;
-  app: InstantApp;
-}) {
-  return (
-    <div className={cn('flex-1 flex flex-col', className)}>
-      <div className="flex-1 flex flex-col items-center justify-center">
-        <h2 className="text-center text-xl font-medium text-gray-900">
-          Storage is not enabled for this app yet!
-        </h2>
-        <p className="mt-2 text-center text-base text-gray-500 max-w-lg">
-          We're working on making storage just right, and can't wait to share it
-          with you. Are you interested in trying it out early?
-        </p>
-        {/* TODO: link to Google Form instead */}
-        <a
-          href="https://docs.google.com/forms/d/e/1FAIpQLSdzInffrNrsYaamtH_BUe917EOpcOq2k8RWcGM19XepJR6ivQ/viewform?usp=sf_link"
-          target="_blank"
-          rel="noopener noreferer"
-        >
-          <Button className="mt-6" size="large">
-            Request beta access
-          </Button>
-        </a>
-      </div>
-    </div>
-  );
-}
-
 export function StorageTab({
   className,
   app,
@@ -685,9 +653,5 @@ export function StorageTab({
   app: InstantApp;
   isEnabled?: boolean;
 }) {
-  if (isEnabled) {
     return <StorageEnabledTab className={className} app={app} />;
-  } else {
-    return <StorageDisabledTab className={className} app={app} />;
-  }
 }
