@@ -31,12 +31,14 @@
    [instant.reactive.ephemeral :as eph]
    [instant.util.exception :as ex]
    [instant.util.uuid :as uuid-util]
-   [instant.reactive.session :as session])
+   [instant.reactive.session :as session]
+   [instant.gauges :as gauges])
   (:import
-   (java.util.concurrent LinkedBlockingQueue)))
+   (java.util.concurrent LinkedBlockingQueue CancellationException)
+   (java.time Duration Instant)))
 
 ;; ------
-;; Setup 
+;; Setup
 
 (declare receive-q)
 (declare receive-worker-ch)
@@ -216,13 +218,15 @@
 (defn event-attributes
   [store-conn
    session-id
-   {:keys [op client-event-id] :as _event}]
+   {:keys [op client-event-id receive-q-delay-ms worker-delay-ms] :as _event}]
   (let [auth (rs/get-auth @store-conn session-id)
         creator (rs/get-creator @store-conn session-id)]
     (merge
      {:op op
       :client-event-id client-event-id
-      :session-id session-id}
+      :session-id session-id
+      :worker-delay-ms worker-delay-ms
+      :receive-q-delay-ms receive-q-delay-ms}
      (auth-and-creator-attrs auth creator))))
 
 (defn socket-origin [{:keys [http-req]}]
@@ -311,7 +315,7 @@
         :remove-query (handle-remove-query! store-conn id event)
         :refresh (handle-refresh! store-conn id event)
         :transact (handle-transact! store-conn id event)
-        ;; ----- 
+        ;; -----
         ;; EPH events
         :join-room (handle-join-room! store-conn eph-store-atom id event)
         :leave-room (handle-leave-room! store-conn eph-store-atom id event)
@@ -319,10 +323,11 @@
         :client-broadcast (handle-client-broadcast! store-conn eph-store-atom id event)))))
 
 ;; --------------
-;; Receive Workers 
+;; Receive Workers
 
-(defn- handle-instant-exception [store-conn sess-id original-event instant-ex]
-  (let [{:keys [client-event-id]} original-event
+(defn- handle-instant-exception [store-conn session original-event instant-ex]
+  (let [sess-id (:session/id session)
+        {:keys [client-event-id]} original-event
         {:keys [::ex/type ::ex/message ::ex/hint] :as err-data} (ex-data instant-ex)]
     (tracer/add-data! {:attributes {:err-data (pr-str err-data)}})
     (condp contains? type
@@ -366,8 +371,9 @@
                              :message message
                              :hint hint})))))
 
-(defn- handle-uncaught-err [store-conn sess-id original-event root-err]
-  (let [{:keys [client-event-id]} original-event]
+(defn- handle-uncaught-err [store-conn session original-event root-err]
+  (let [sess-id (:session/id session)
+        {:keys [client-event-id]} original-event]
     (tracer/add-exception! root-err {:escaping? false})
     (rs/try-send-event! store-conn sess-id
                         {:op :error
@@ -377,32 +383,50 @@
                          :message (str "Yikes, something broke on our end! Sorry about that."
                                        " Please ping us (Joe and Stopa) on Discord and let us know!")})))
 
-(defn handle-receive [store-conn eph-store-atom session event]
+(defn handle-receive-attrs [store-conn session event]
   (let [{:keys [session/socket worker-n]} session
-        {sess-id :id} socket
+        sess-id (:session/id session)
         event-attrs (event-attributes store-conn sess-id event)]
+    (assoc event-attrs
+           :worker-n worker-n
+           :socket-origin (socket-origin socket)
+           :socket-ip (socket-ip socket)
+           :session-id sess-id)))
+
+(defn handle-receive [store-conn eph-store-atom session event]
+  (tracer/with-exceptions-silencer [silence-exceptions]
     (tracer/with-span! {:name "receive-worker/handle-receive"
                         :sample-rate (event-sample-rate event)
-                        :attributes (assoc event-attrs
-                                           :worker-n worker-n
-                                           :socket-origin (socket-origin socket)
-                                           :socket-ip (socket-ip socket))}
+                        :attributes (handle-receive-attrs store-conn session event)}
+      (let [pending-handlers (:pending-handlers (:session/socket session))
+            event-fut (ua/vfuture (handle-event store-conn eph-store-atom session event))
+            pending-handler {:future event-fut
+                             :op (:op event)
+                             :silence-exceptions silence-exceptions}]
+        (swap! pending-handlers conj pending-handler)
+        (tracer/add-data! {:attributes {:concurrent-handler-count (count @pending-handlers)}})
+        (try
+          (let [ret (deref event-fut handle-receive-timeout-ms :timeout)]
+            (when (= :timeout ret)
+              (future-cancel event-fut)
+              (ex/throw-operation-timeout! :handle-receive handle-receive-timeout-ms)))
 
-      (try
-        (let [event-fut (ua/vfuture (handle-event store-conn eph-store-atom session event))
-              ret (deref event-fut handle-receive-timeout-ms :timeout)]
-          (when (= :timeout ret)
-            (future-cancel event-fut)
-            (ex/throw-operation-timeout! :handle-receive handle-receive-timeout-ms)))
-        (catch Throwable e
-          (let [original-event event
-                instant-ex (ex/find-instant-exception e)
-                root-err (root-cause e)]
-            (cond
-              instant-ex (handle-instant-exception
-                          store-conn sess-id original-event instant-ex)
-              :else (handle-uncaught-err
-                     store-conn sess-id original-event root-err))))))))
+          (catch CancellationException _e
+            ;; We must have cancelled this in the on-close, so don't try to do any
+            ;; error handling
+            (tracer/record-info! {:name "handle-receive-cancelled"}))
+          (catch Throwable e
+            (tracer/record-info! {:name "caught-throwable"})
+            (let [original-event event
+                  instant-ex (ex/find-instant-exception e)
+                  root-err (root-cause e)]
+              (cond
+                instant-ex (handle-instant-exception
+                            store-conn session original-event instant-ex)
+                :else (handle-uncaught-err
+                       store-conn session original-event root-err))))
+          (finally
+            (swap! pending-handlers disj pending-handler)))))))
 
 (defn straight-jacket-handle-receive [store-conn eph-store-atom session event]
   (try
@@ -417,7 +441,9 @@
                         :attributes {:worker-n worker-n}})
 
   (loop []
-    (let [{:keys [session-id] :as event} (a/<!! worker-ch)
+    (let [{:keys [put-at worker-queued-at item]} (a/<!! worker-ch)
+          {:keys [session-id] :as event} item
+          now (Instant/now)
           session (rs/get-session @store-conn session-id)]
       (cond
         (not event)
@@ -432,11 +458,18 @@
             (recur))
 
         :else
-        (do (straight-jacket-handle-receive store-conn
-                                            eph-store-atom
-                                            (assoc (into {} session)
-                                                   :worker-n worker-n)
-                                            event)
+        (do (straight-jacket-handle-receive
+             store-conn
+             eph-store-atom
+             (assoc (into {} session)
+                    :worker-n worker-n)
+             (assoc event
+                    :receive-q-delay-ms
+                    (.toMillis (Duration/between put-at worker-queued-at))
+                    :worker-delay-ms
+                    (.toMillis (Duration/between worker-queued-at now))
+                    :total-delay-ms
+                    (.toMillis (Duration/between put-at now))))
             (recur))))))
 
 (defn start-receive-orchestrator [store-conn eph-store-atom receive-q worker-ch]
@@ -444,12 +477,16 @@
   (doseq [n (range num-receive-workers)]
     (ua/fut-bg (start-receive-worker store-conn eph-store-atom worker-ch n)))
   (loop []
-    (let [item (.take receive-q)]
+    (let [{:keys [item] :as msg} (.take receive-q)]
       (if (= :stop item)
         (do (a/close! worker-ch)
             (tracer/record-info! {:name "receive-orchestrator/stop"}))
-        (do (a/>!! worker-ch item)
+        (do (a/>!! worker-ch (assoc msg :worker-queued-at (Instant/now)))
             (recur))))))
+
+(defn enqueue->receive-q [receive-q item]
+  (.put receive-q {:item item
+                   :put-at (Instant/now)}))
 
 ;; -----------------
 ;; Websocket Interop
@@ -469,9 +506,9 @@
     (rs/add-socket! store-conn id socket)))
 
 (defn on-message [{:keys [id receive-q data]}]
-  (.put receive-q (-> (<-json data true)
-                      (update :op keyword)
-                      (assoc :session-id id))))
+  (enqueue->receive-q receive-q (-> (<-json data true)
+                                    (update :op keyword)
+                                    (assoc :session-id id))))
 
 (defn on-error [{:keys [id error]}]
   (condp instance? error
@@ -480,7 +517,7 @@
                                           :attributes {:session-id id}
                                           :escaping? false})))
 
-(defn on-close [store-conn eph-store-atom {:keys [id]}]
+(defn on-close [store-conn eph-store-atom {:keys [id pending-handlers]}]
   (tracer/with-span! {:name "socket/on-close"
                       :attributes {:session-id id}}
     (let [{:keys [ping-job]} (rs/get-socket @store-conn id)]
@@ -488,6 +525,13 @@
         (.cancel ping-job false)
         (tracer/record-info! {:name "socket/on-close-no-ping-job"
                               :attributes {:session-id id}}))
+
+      (doseq [{:keys [future silence-exceptions op]} @pending-handlers]
+        (tracer/with-span! {:name "cancel-pending-handler"
+                            :attributes {:op op}}
+          (silence-exceptions true)
+          (future-cancel future)))
+
       (let [app-id (-> (rs/get-auth @store-conn id)
                        :app
                        :id)]
@@ -496,35 +540,50 @@
 
 (defn undertow-config
   [store-conn eph-store-atom receive-q {:keys [id]}]
-  {:undertow/websocket
-   {:on-open (fn [{ws-conn :channel http-req :exchange :as _req}]
-               (let [socket {:id id
-                             :http-req http-req
-                             :ws-conn ws-conn
-                             :receive-q receive-q
-                             :ping-job (start-ping-job store-conn id)}]
-                 (on-open store-conn socket)))
-    :on-message (fn [{:keys [data]}]
-                  (on-message {:id id
-                               :data data
-                               :receive-q receive-q}))
-    :on-error (fn [{:keys [error]}]
-                (on-error {:id id
-                           :error error}))
-    :on-close (fn [_]
-                (on-close store-conn eph-store-atom {:id id}))}})
+  (let [pending-handlers (atom #{})]
+    {:undertow/websocket
+     {:on-open (fn [{ws-conn :channel http-req :exchange :as _req}]
+                 (let [socket {:id id
+                               :http-req http-req
+                               :ws-conn ws-conn
+                               :receive-q receive-q
+                               :ping-job (start-ping-job store-conn id)
+                               :pending-handlers pending-handlers}]
+                   (on-open store-conn socket)))
+      :on-message (fn [{:keys [data]}]
+                    (on-message {:id id
+                                 :data data
+                                 :receive-q receive-q}))
+      :on-error (fn [{:keys [error]}]
+                  (on-error {:id id
+                             :error error}))
+      :on-close (fn [_]
+                  (on-close store-conn
+                            eph-store-atom
+                            {:id id
+                             :pending-handlers pending-handlers}))}}))
 
 ;; ------
 ;; System
 
+(defn receive-q-metrics [receive-q]
+  [{:path "instant.reactive.session.receive-q.size"
+    :value (.size receive-q)}
+   {:path "instant.reactive.session.receive-q.longest-waiting-ms"
+    :value (if-let [{:keys [put-at]} (.peek receive-q)]
+             (.toMillis (Duration/between put-at (Instant/now)))
+             0)}])
+
 (defn start []
   (def receive-q (LinkedBlockingQueue.))
   (def receive-worker-ch (a/chan))
+  (def cleanup-gauge (gauges/add-gauge-metrics-fn
+                      (fn [] (receive-q-metrics receive-q))))
   (ua/fut-bg (start-receive-orchestrator rs/store-conn eph/ephemeral-store-atom receive-q receive-worker-ch)))
 
 (defn stop []
-  (.put receive-q :stop)
-
+  (enqueue->receive-q receive-q :stop)
+  (cleanup-gauge)
   (a/close! receive-worker-ch))
 
 (defn restart []

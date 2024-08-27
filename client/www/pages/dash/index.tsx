@@ -130,11 +130,6 @@ export default function DashV2() {
 }
 
 function isTabAvailable(tab: Tab, role?: Role) {
-  // TODO: remove after testing
-  if (tab.id === 'storage') {
-    return false;
-  }
-
   return tab.minRole ? role && isMinRole(tab.minRole, role) : true;
 }
 
@@ -184,6 +179,12 @@ function Dashboard() {
     return apps;
   }, [dashResponse.data?.apps]);
   const app = apps?.find((a) => a.id === appId);
+  const isStorageEnabled = useMemo(() => {
+    const storageEnabledAppIds =
+      dashResponse.data?.flags?.storage_enabled_apps ?? [];
+
+    return storageEnabledAppIds.includes(appId);
+  }, [appId, dashResponse.data?.flags?.storage_enabled_apps]);
 
   // ui
   const availableTabs = tabs
@@ -364,7 +365,11 @@ function Dashboard() {
                     nav={nav}
                   />
                 ) : tab === 'storage' ? (
-                  <StorageTab key={app.id} app={app} />
+                  <StorageTab
+                    key={app.id}
+                    app={app}
+                    isEnabled={isStorageEnabled}
+                  />
                 ) : tab == 'admin' && isMinRole('admin', app.user_app_role) ? (
                   <Admin
                     dashResponse={dashResponse}

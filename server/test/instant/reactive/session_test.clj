@@ -39,9 +39,16 @@
         socket {:id sess-id
                 :ws-conn fake-ws-conn
                 :receive-q receive-q
-                :ping-job (future)}
+                :ping-job (future)
+                :pending-handlers (atom #{})}
+        second-socket {:id (random-uuid)
+                       :ws-conn (a/chan 1)
+                       :receive-q receive-q
+                       :ping-job (future)
+                       :pending-handlers (atom #{})}
         query-reactive rq/instaql-query-reactive!]
     (session/on-open store-conn socket)
+    (session/on-open store-conn second-socket)
 
     (binding [*store-conn* store-conn
               *instaql-query-results* (atom {})
@@ -56,8 +63,10 @@
                       (let [res (query-reactive store-conn base-ctx instaql-query)]
                         (swap! *instaql-query-results* assoc-in [session-id instaql-query] res)
                         res))]
-        (f store-conn eph-store-atom socket)
-        (session/on-close store-conn eph-store-atom socket)))))
+        (f store-conn eph-store-atom {:socket socket
+                                      :second-socket second-socket})
+        (session/on-close store-conn eph-store-atom socket)
+        (session/on-close store-conn eph-store-atom second-socket)))))
 
 (defn- blocking-send-msg [{:keys [ws-conn id]} msg]
   (session/handle-receive *store-conn* *eph-store-atom* (rs/get-session @*store-conn* id) msg)
@@ -73,7 +82,8 @@
 
 (deftest anon-auth
   (with-session
-    (fn [store-conn _eph-store-atom {:keys [id] :as socket}]
+    (fn [store-conn _eph-store-atom {:keys [socket]
+                                     {:keys [id]} :socket}]
       (testing "non-existent app"
         (is (= 400
                (:status (blocking-send-msg
@@ -191,14 +201,14 @@
 
 (deftest add-query-requires-auth
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (is (= 400
              (:status (blocking-send-msg
                        socket {:op :add-query :q (:kw-q query-1987)})))))))
 
 (deftest add-malformed-query-rejected
   (with-session
-    (fn [_store-conn _ socket]
+    (fn [_store-conn _ {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (testing "malformed query are rejected"
         (is (= 400
@@ -206,7 +216,7 @@
 
 (deftest add-query-works
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
 
       (testing "add query: movies in 1987"
@@ -220,7 +230,8 @@
 
 (deftest add-query-sets-store
   (with-session
-    (fn [store-conn _eph-store-atom {:keys [id] :as socket}]
+    (fn [store-conn _eph-store-atom {:keys [socket]
+                                     {:keys [id]} :socket}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (blocking-send-msg socket
                          {:op :add-query
@@ -274,7 +285,7 @@
 
 (deftest add-duplicate-query-returns-query-exists
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (blocking-send-msg socket {:op :add-query :q (:kw-q query-robocop)})
       (is (= {:op :add-query-exists,
@@ -284,7 +295,7 @@
 
 (deftest remove-query-works
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (blocking-send-msg socket
                          {:op :add-query
@@ -297,7 +308,7 @@
 
 (deftest remove-query-updates-store
   (with-session
-    (fn [store-conn _eph-store-atom socket]
+    (fn [store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
 
       (blocking-send-msg socket
@@ -355,7 +366,7 @@
   (with-movies-app
     (fn [{app-id :id :as _app} r]
       (with-session
-        (fn [store-conn _eph-store-atom {sess-id :id :as socket}]
+        (fn [store-conn _eph-store-atom {{sess-id :id :as socket} :socket}]
           (blocking-send-msg socket {:op :init :app-id app-id})
           (blocking-send-msg socket
                              {:op :add-query
@@ -389,7 +400,7 @@
   (with-movies-app
     (fn [{app-id :id :as _app} r]
       (with-session
-        (fn [store-conn _eph-store-atom {sess-id :id :as socket}]
+        (fn [store-conn _eph-store-atom {{sess-id :id :as socket} :socket}]
           (blocking-send-msg socket {:op :init :app-id app-id})
           (blocking-send-msg socket
                              {:op :add-query
@@ -427,7 +438,7 @@
   (with-movies-app
     (fn [{app-id :id :as _app} r]
       (with-session
-        (fn [store-conn _eph-store-atom {sess-id :id :as socket}]
+        (fn [store-conn _eph-store-atom {{sess-id :id :as socket} :socket}]
           (blocking-send-msg socket {:op :init :app-id app-id})
           (let [john-uuid (resolvers/->uuid r "eid-john-mctiernan")
                 ted-uuid (resolvers/->uuid r "eid-ted-kotcheff")
@@ -510,7 +521,7 @@
 (deftest transact-requires-auth
   (with-session
     (fn
-      [_store-conn _eph-store-atom socket]
+      [_store-conn _eph-store-atom {:keys [socket]}]
       (is (= 400
              (:status (blocking-send-msg
                        socket {:op :transact :tx-steps []})))))))
@@ -520,7 +531,7 @@
     (fn [{app-id :id}]
       (with-session
         (fn
-          [_store-conn _eph-store-atom socket]
+          [_store-conn _eph-store-atom {:keys [socket]}]
           (blocking-send-msg socket {:op :init :app-id app-id})
           (is (= 400
                  (:status (blocking-send-msg
@@ -531,7 +542,7 @@
   (with-movies-app
     (fn [{app-id :id :as _app} r]
       (with-session
-        (fn [_ _ socket]
+        (fn [_ _ {:keys [socket]}]
           (blocking-send-msg socket {:op :init :app-id app-id})
           (let [robocop-eid (resolvers/->uuid r "eid-robocop")
                 name-attr-id (resolvers/->uuid r :movie/title)]
@@ -556,7 +567,7 @@
 
 (deftest join-room-works
   (with-session
-    (fn [_store-conn eph-store-atom socket]
+    (fn [_store-conn eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (let [rid (UUID/randomUUID)
             sess-id (:id socket)
@@ -575,7 +586,7 @@
 
 (deftest leave-room-works
   (with-session
-    (fn [_store-conn eph-store-atom socket]
+    (fn [_store-conn eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (let [rid (UUID/randomUUID)
             sess-id (:id socket)]
@@ -595,22 +606,39 @@
           (is (= :leave-room-ok op))
           (is (= rid room-id))
           (is (empty? (get-in @eph-store-atom [:rooms movies-app-id rid :session-ids])))
-          (is (empty? (get-in @eph-store-atom [:sessions sess-id :room-ids]))))))))
+          (is (empty? (get-in @eph-store-atom [:sessions sess-id :room-ids])))
+          (testing "store gets cleaned up"
+            (is (= {} @eph-store-atom))))))))
 
 (deftest get-changed-rooms-works
   (with-session
-    (fn [_store-conn eph-store-atom socket]
+    (fn [_store-conn eph-store-atom {:keys [socket second-socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
+      (blocking-send-msg second-socket {:op :init :app-id movies-app-id})
       (let [rid (UUID/randomUUID)
             initial-rooms (get-in @eph-store-atom [:rooms])
-            _join-room (blocking-send-msg socket
-                                          {:op :join-room :room-id rid})
+            join-room (blocking-send-msg socket
+                                         {:op :join-room :room-id rid})
+            _ (is (= :join-room-ok
+                     (:op join-room)))
+            join-room-2 (blocking-send-msg second-socket
+                                           {:op :join-room
+                                            :room-id rid})
+            _ (is (= :join-room-ok
+                     (:op join-room-2)))
             after-join-rooms (get-in @eph-store-atom [:rooms])
             _ (swap! eph-store-atom assoc :hello "hello")
             after-hello-rooms (get-in @eph-store-atom [:rooms])
-            _leave-room (blocking-send-msg socket
-                                           {:op :leave-room :room-id rid})
-            after-leave-rooms (get-in @eph-store-atom [:rooms])]
+            leave-room (blocking-send-msg socket
+                                          {:op :leave-room :room-id rid})
+            _ (is (= :leave-room-ok
+                     (:op leave-room)))
+            after-leave-rooms (get-in @eph-store-atom [:rooms])
+            leave-room-2 (blocking-send-msg second-socket
+                                            {:op :leave-room :room-id rid})
+            _ (is (= :leave-room-ok
+                     (:op leave-room-2)))
+            after-room-empty (get-in @eph-store-atom [:rooms])]
 
         ;; changed rooms should be non-empty when joining
         (blocking-send-msg socket {:op :join-room :room-id rid})
@@ -619,12 +647,15 @@
         ;; changed rooms should be empty after non-room change
         (is (empty? (eph/get-changed-rooms after-join-rooms after-hello-rooms)))
 
-        ;; changed rooms should be non-empty when leaving
-        (is (seq (eph/get-changed-rooms after-hello-rooms after-leave-rooms)))))))
+        ;; changed rooms should be non-empty when someone leaves (unless it's the last person)
+        (is (seq (eph/get-changed-rooms after-hello-rooms after-leave-rooms)))
+
+        ;; changed rooms should be empty when the last person leaves
+        (is (empty? (eph/get-changed-rooms after-hello-rooms after-room-empty)))))))
 
 (deftest set-presence-works
   (with-session
-    (fn [_store-conn eph-store-atom socket]
+    (fn [_store-conn eph-store-atom {:keys [socket]}]
       (let [rid (UUID/randomUUID)
             sess-id (:id socket)
             d1 {:hello "world"}
@@ -656,7 +687,7 @@
 
 (deftest set-presence-fails-when-not-in-room
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (let [rid (UUID/randomUUID)
             d1 {:hello "world"}
@@ -666,7 +697,7 @@
 
 (deftest broadcast-works
   (with-session
-    (fn [_store-conn eph-store-atom socket]
+    (fn [_store-conn eph-store-atom {:keys [socket]}]
       (let [rid (UUID/randomUUID)
             sess-id (:id socket)
             t1 "foo"
@@ -694,7 +725,7 @@
 
 (deftest broadcast-fails-when-not-in-room
   (with-session
-    (fn [_store-conn _eph-store-atom socket]
+    (fn [_store-conn _eph-store-atom {:keys [socket]}]
       (blocking-send-msg socket {:op :init :app-id movies-app-id})
       (let [rid (UUID/randomUUID)
             t1 "foo"
