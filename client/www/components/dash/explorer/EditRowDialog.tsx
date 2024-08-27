@@ -150,6 +150,7 @@ export function EditRowDialog({
         return [field, value];
       })
     );
+    console.log({ updates, params });
     await db.transact(tx[namespace.name][item.id ?? id()].update(params));
     onClose();
     successToast('Successfully updated row!');

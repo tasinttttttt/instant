@@ -41,6 +41,7 @@ import {
 } from '@/components/ui';
 import { AppAuth } from '@/components/dash/AppAuth';
 import Billing from '@/components/dash/Billing';
+import ImportData from '@/components/dash/ImportData';
 import { useIsHydrated } from '@/lib/hooks/useIsHydrated';
 import { QueryInspector } from '@/components/dash/explorer/QueryInspector';
 import { Sandbox } from '@/components/dash/Sandbox';
@@ -67,7 +68,8 @@ type TabId =
   | 'team'
   | 'admin'
   | 'billing'
-  | 'storage';
+  | 'storage'
+  | 'importdata';
 
 interface Tab {
   id: TabId;
@@ -86,6 +88,7 @@ const tabs: Tab[] = [
   { id: 'sandbox', title: 'Sandbox' },
   { id: 'admin', title: 'Admin', minRole: 'admin' },
   { id: 'billing', title: 'Billing', minRole: 'owner' },
+  { id: 'importdata', title: 'Import Data', minRole: 'owner' },
 ];
 
 const tabIndex = new Map(tabs.map((t) => [t.id, t]));
@@ -372,6 +375,9 @@ function Dashboard() {
                 ) : tab == 'billing' &&
                   isMinRole('owner', app.user_app_role) ? (
                   <Billing appId={appId} />
+                ) : tab == 'importdata' &&
+                  isMinRole('owner', app.user_app_role) ? (
+                  <ImportData db={connection.db} />
                 ) : null}
               </div>
             </div>

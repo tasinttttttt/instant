@@ -16,7 +16,7 @@ export function Dev() {
   const [open, setOpen] = useState(false);
 
   function toggleOpen(e: KeyboardEvent) {
-    if (e.key === '9' && e.shiftKey && e.metaKey) {
+    if (e.shiftKey && e.key === 'D') {
       setOpen((_) => !_);
     }
   }
@@ -157,7 +157,8 @@ export function Dev() {
               onClick={() => {
                 setToken(undefined);
                 location.reload();
-              }}>
+              }}
+            >
               Clear
             </button>
           </div>

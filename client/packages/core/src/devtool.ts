@@ -18,8 +18,10 @@ export function createDevtool(appId: string) {
   }
 
   function onKeyDown(event: KeyboardEvent) {
-    const isToggleShortcut =
-      event.shiftKey && event.ctrlKey && event.key === "0";
+    console.log({
+      key: event.key,
+    });
+    const isToggleShortcut = event.key === "d";
     const isEsc = event.key === "Escape" || event.key === "Esc";
 
     if (isToggleShortcut || isEsc) {
