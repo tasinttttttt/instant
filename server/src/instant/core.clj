@@ -60,7 +60,7 @@
   (POST "/hooks/stripe" [] stripe/webhook))
 
 (defroutes generic-webhook-routes
-  (POST "/hooks/honeycomb/exceptions" [] honeycomb-api/webhook))
+  (POST "/hooks/NOT_USED" [] honeycomb-api/webhook))
 
 (defn handler []
   (routes

@@ -45,11 +45,12 @@ const elementKeys = {
   },
 };
 
-export async function getFormattedElementData(file: Entry) {
+export async function getFormattedElementData(file: Entry, users: []) {
   const writer = new TextWriter();
   const raw = await file.getData(writer);
   const data = decodeContent(raw);
   var result = {};
+  var link = {};
   marked.use({ breaks: true });
 
   Object.keys(elementKeys).forEach((key) => {
@@ -108,18 +109,16 @@ export async function getFormattedElementData(file: Entry) {
     result['updated_at'] =
       (data.modified && new Date(data.modified)) || new Date();
   }
-  // if (data.hasOwnProperty('author')) {
-  //   result['author'] = data.author
-  //     .split(',')
-  //     .map((val: string) => val.trim())
-  //     .filter((val: string) => val !== '');
-  // }
-  // if (data.hasOwnProperty('guests')) {
-  //   result['guests'] = data.guests
-  //     .split(',')
-  //     .map((val: string) => val.trim())
-  //     .filter((val: string) => val !== '');
-  // }
+
+  link['users'] = [];
+  if (data.hasOwnProperty('author')) {
+    const match = users.find((user) => user.username === data.author);
+    if (match) {
+      link['users'].push({
+        id: match.id,
+      });
+    }
+  }
 
   return result;
 }

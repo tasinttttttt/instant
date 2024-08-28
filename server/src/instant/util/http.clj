@@ -112,6 +112,6 @@
                              :hint (assoc hint :debug-uri (tracer/span-uri))}))
             :else (do  (tracer/add-exception! e {:escaping? false})
                        (response/internal-server-error
-                        {:type :unknown
-                         :message "Something went wrong. Please ping `debug-uri` in #bug-and-questions, and we'll take a look. Sorry about this!"
-                         :hint {:debug-uri (tracer/span-uri)}}))))))))
+                        {:type (keyword (name type))
+                         :message message
+                         :hint (assoc hint :debug-uri (tracer/span-uri))}))))))))
