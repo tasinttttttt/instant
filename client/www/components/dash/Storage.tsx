@@ -647,11 +647,9 @@ export function StorageEnabledTab({
 export function StorageTab({
   className,
   app,
-  isEnabled,
 }: {
   className?: string;
   app: InstantApp;
-  isEnabled?: boolean;
 }) {
     return <StorageEnabledTab className={className} app={app} />;
 }
