@@ -27,6 +27,7 @@
             [instant.model.instant-subscription :as instant-subscription-model]
             [instant.model.app-email-template :as app-email-template-model]
             [instant.model.app-email-sender :as app-email-sender-model]
+            [instant.model.instant-cli-login :as instant-cli-login-model]
             [instant.postmark :as postmark]
             [instant.util.async :refer [fut-bg]]
             [instant.util.coll :as coll]
@@ -52,8 +53,7 @@
             [instant.lib.ring.websocket :as ws]
             [instant.jdbc.aurora :as aurora]
             [instant.stripe :as stripe]
-            [instant.storage.s3 :as s3-util]
-            [instant.storage.beta :as storage-beta])
+            [instant.storage.s3 :as s3-util])
 
   (:import
    (java.util UUID)
@@ -279,10 +279,8 @@
         apps (app-model/get-all-for-user {:user-id id})
         profile (instant-profile-model/get-by-user-id {:user-id id})
         invites (instant-app-member-invites-model/get-pending-for-invitee {:email email})
-        whitelist (storage-beta/whitelist)
         storage-enabled-app-ids (->> apps
-                                     (map :id)
-                                     (filter #(contains? whitelist (str %))))]
+                                     (map :id))]
     (response/ok {:apps apps
                   :profile profile
                   :invites invites
@@ -449,7 +447,7 @@
     (.startsWith path "/") path
     :else (str "/" path)))
 
-(defn oauth-start [{{:keys [redirect_path redirect_to_dev]} :params}]
+(defn oauth-start [{{:keys [redirect_path redirect_to_dev ticket]} :params}]
   (let [cookie (UUID/randomUUID)
         cookie-expires (java.util.Date. (+ (.getTime (java.util.Date.))
                                            ;; 1 hour
@@ -470,7 +468,8 @@
                                            :cookie cookie
                                            :service "google"
                                            :redirect-path (coerce-redirect-path redirect_path)
-                                           :redirect-to-dev (= redirect_to_dev "true")})
+                                           :redirect-to-dev (= redirect_to_dev "true")
+                                           :ticket ticket})
     (-> (response/found redirect-url)
         (response/set-cookie oauth-cookie-name cookie {:http-only true
                                                        ;; Don't require https in dev
@@ -525,14 +524,15 @@
               (fut-bg (ping-for-outreach user-id))
               user))))
 
-(defn oauth-callback-response [{:keys [error code redirect-to-dev]}]
+(defn oauth-callback-response [{:keys [error code redirect-to-dev ticket]}]
   (let [dash (if redirect-to-dev
                (config/dashboard-origin {:env :dev})
                (config/dashboard-origin))
         base-url (str dash "/dash/oauth/callback")
         redirect-url (str base-url "?" (if error
                                          (str "error=" (java.net.URLEncoder/encode error))
-                                         (str "code=" code)))]
+                                         (str "code=" code))
+                          (if ticket (str "&ticket=" ticket) ""))]
     (response/found redirect-url)))
 
 (defn oauth-callback [req]
@@ -600,7 +600,9 @@
           (instant-oauth-code-model/create! {:code code
                                              :user-id (:id user)
                                              :redirect-path (:redirect_path oauth-redirect)})
-          (oauth-callback-response {:code code :redirect-to-dev (:redirect_to_dev oauth-redirect)}))
+          (oauth-callback-response {:code code
+                                    :redirect-to-dev (:redirect_to_dev oauth-redirect)
+                                    :ticket (:ticket oauth-redirect)}))
         (oauth-callback-response {:error "Could not create or update user."})))))
 
 (defn oauth-token-callback [req]
@@ -870,14 +872,12 @@
         filename (ex/get-param! req [:params :filename] string-util/coerce-non-blank-str)
         expiration (+ (System/currentTimeMillis) (* 1000 60 60 24 7)) ;; 7 days
         object-key (s3-util/->object-key app-id filename)]
-    (storage-beta/assert-storage-enabled! app-id)
     (response/ok {:data (str (s3-util/signed-download-url object-key expiration))})))
 
 (defn signed-upload-url-post [req]
   (let [{{app-id :id} :app} (req->app-and-user! :collaborator req)
         filename (ex/get-param! req [:body :filename] string-util/coerce-non-blank-str)
         object-key (s3-util/->object-key app-id filename)]
-    (storage-beta/assert-storage-enabled! app-id)
     (response/ok {:data (str (s3-util/signed-upload-url object-key))})))
 
 (defn format-object [{:keys [key size owner etag last-modified]}]
@@ -890,7 +890,6 @@
 ;; Retrieves all files that have been uploaded via Storage APIs
 (defn files-get [req]
   (let [{{app-id :id} :app} (req->app-and-user! :collaborator req)
-        _ (storage-beta/assert-storage-enabled! app-id)
         subdirectory (-> req :params :subdirectory)
         objects-resp (if (string/blank? subdirectory)
                        (s3-util/list-app-objects app-id)
@@ -901,7 +900,6 @@
 ;; Deletes a single file by name/path (e.g. "demo.png", "profiles/me.jpg")
 (defn file-delete [req]
   (let [{{app-id :id} :app} (req->app-and-user! :collaborator req)
-        _ (storage-beta/assert-storage-enabled! app-id)
         filename (-> req :params :filename)
         key (s3-util/->object-key app-id filename)
         resp (s3-util/delete-object key)]
@@ -910,7 +908,6 @@
 ;; Deletes a multiple files by name/path (e.g. "demo.png", "profiles/me.jpg")
 (defn files-delete [req]
   (let [{{app-id :id} :app} (req->app-and-user! :collaborator req)
-        _ (storage-beta/assert-storage-enabled! app-id)
         filenames (-> req :body :filenames)
         keys (mapv (fn [filename] (s3-util/->object-key app-id filename)) filenames)
         resp (s3-util/delete-objects keys)]
@@ -951,11 +948,13 @@
                     (map (fn [[attr-name new-attr]]
                            (let
                             [current-attr (get-in current-schema [:blobs ns-name attr-name])
+                             name-id? (= "id" (name attr-name))
                              new-attr? (not current-attr)
                              unchanged-attr? (and
                                               (= (get new-attr :unique?) (get current-attr :unique?))
                                               (= (get new-attr :index?) (get current-attr :index?)))]
                              (cond
+                               name-id? nil
                                unchanged-attr? nil
                                new-attr?  [:add-attr
                                            {:value-type :blob
@@ -1034,22 +1033,16 @@
 
 (defn defs->schema [defs]
   (let [{entities :entities links :links} defs
-        refs-indexed (into {} (map (fn [[_
-                                         {from-ns :from
-                                          from-attr :fromAttr
-                                          from-has :fromHas
-                                          to-ns :to
-                                          to-attr :toAttr
-                                          to-has :toHas}]]
-                                     [[from-ns from-attr to-ns to-attr]
+        refs-indexed (into {} (map (fn [[_ {forward :forward reverse :reverse}]]
+                                     [[(:on forward) (:label forward) (:on reverse) (:label reverse)]
                                       (merge
                                        {:id nil
                                         :value-type :ref
                                         :index? false
-                                        :forward-identity [nil from-ns from-attr]
-                                        :reverse-identity [nil to-ns to-attr]}
+                                        :forward-identity [nil (:on forward) (:label forward)]
+                                        :reverse-identity [nil (:on reverse) (:label reverse)]}
                                        (get relationships->schema-params
-                                            [(keyword from-has) (keyword to-has)]))])
+                                            [(keyword (:has forward)) (keyword (:has reverse))]))])
                                    links))
         blobs-indexed (map-map (fn [[ns-name def]]
                                  (map-map (fn [[attr-name attr-def]]
@@ -1113,12 +1106,49 @@
   (def u (instant-user-model/get-by-email {:email "stopa@instantdb.com"}))
   (def r (instant-user-refresh-token-model/create! {:id (UUID/randomUUID) :user-id (:id u)}))
   (schemas->ops
-   {:refs {["posts" "comments" "comments" "post"] {:unique? true}}
-    :blobs {:ns {:a {:cardinality "one"} :b {:cardinality "many"} :c {:cardinality "one"}}}}
-   {:refs {["posts" "comments" "comments" "post"] {:unique? false}}
+   {:refs {}
+    :blobs {}}
+   {:refs {["posts" "comments" "comments" "post"] {:unique? false :cardinality "many"}}
     :blobs {:ns {:a {:cardinality "many"} :b {:cardinality  "many"}}}})
   (schema-push-plan-post {:params {:app_id counters-app-id}
                           :headers {"authorization" (str "Bearer " (:id r))}}))
+
+;; --- 
+;; CLI auth
+
+(defn cli-auth-register-post [_]
+  (let [secret (UUID/randomUUID)
+        ticket (UUID/randomUUID)]
+    (instant-cli-login-model/create!
+     aurora/conn-pool
+     {:secret secret
+      :ticket ticket})
+    (response/ok {:secret secret :ticket ticket})))
+
+(defn cli-auth-claim-post [req]
+  (let [{user-id :id} (req->auth-user! req)
+        ticket (ex/get-param! req [:body :ticket] uuid-util/coerce)]
+    (instant-cli-login-model/claim! aurora/conn-pool {:user-id user-id :ticket ticket})
+    (response/ok {:ticket ticket})))
+
+(defn cli-auth-void-post [req]
+  (let [_ (req->auth-user! req)
+        ticket (ex/get-param! req [:body :ticket] uuid-util/coerce)]
+    (instant-cli-login-model/void! aurora/conn-pool {:ticket ticket})
+    (response/ok {})))
+
+(defn cli-auth-check-post [req]
+  (let [secret (ex/get-param! req [:body :secret] uuid-util/coerce)
+        cli-auth (instant-cli-login-model/check! aurora/conn-pool {:secret secret})
+        user-id (:user_id cli-auth)
+        _ (ex/assert-valid! :cli-auth
+                            (:id cli-auth)
+                            (when-not user-id [{:message "Invalid CLI auth ticket"}]))
+        refresh-token (instant-user-refresh-token-model/create! {:id (UUID/randomUUID) :user-id user-id})
+        token (:id refresh-token)
+        {email :email} (instant-user-model/get-by-id! {:id user-id})
+        res {:token token :email email}]
+    (response/ok res)))
 
 ;; --- 
 ;; WS playground 
@@ -1198,6 +1228,11 @@
    (GET "/dash/oauth/callback" [] oauth-callback))
 
   (POST "/dash/oauth/token" [] oauth-token-callback)
+
+  (POST "/dash/cli/auth/register" [] cli-auth-register-post)
+  (POST "/dash/cli/auth/check" [] cli-auth-check-post)
+  (POST "/dash/cli/auth/claim" [] cli-auth-claim-post)
+  (POST "/dash/cli/auth/void" [] cli-auth-void-post)
 
   (GET "/dash/session_counts" [] session-counts-get)
 

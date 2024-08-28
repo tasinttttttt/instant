@@ -176,6 +176,21 @@
         :prod "0.0.0.0"
         nil)))
 
+;; S3
+(defn s3-access-key []
+  (or (System/getenv "S3_ACCESS_KEY")
+      (some-> @config-map :s3-access-key (.value))))
+(defn s3-secret-key []
+  (or (System/getenv "S3_SECRET_KEY")
+      (some-> @config-map :s3-secret-key (.value))))
+(defn s3-endpoint []
+  (or (System/getenv "S3_ENDPOINT")
+      (some-> @config-map :s3-endpoint (.value))))
+(defn s3-signed-url-endpoint []
+  (or (System/getenv "S3_SIGNED_URL_ENDPOINT")
+      (some-> @config-map :s3-signed-url-endpoint (.value))))
+
+
 (defn init []
   ;; instantiate the config-map so we can fail early if it's not
   ;; valid

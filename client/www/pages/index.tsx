@@ -113,6 +113,8 @@ function LandingHero() {
       <SectionWide>
         <TwoColResponsive>
           <div className="flex flex-1 flex-col gap-8">
+            <h2>{JSON.stringify(config)}</h2>
+            <h2>{process.env.NODE_ENV}</h2>
             <H2>The realtime client-side database</H2>
             <p>
               Instant is for building real-time and offline-enabled
@@ -909,7 +911,7 @@ const testimonials = [
 const queryExampleComponentCode = /*js*/ `
 import { init, tx, id } from "@instantdb/react";
 
-const db = init({ 
+const db = init({
   appId: process.env.NEXT_PUBLIC_APP_ID,
 });
 

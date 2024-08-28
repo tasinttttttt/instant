@@ -2,7 +2,6 @@
   (:require [instant.config :as config]
             [instant.db.datalog :as d]
             [instant.db.model.attr :as attr-model]
-            [instant.util.exception :as ex]
             [instant.util.tracer :as tracer]
             [instant.jdbc.aurora :as aurora]))
 
@@ -27,8 +26,5 @@
       (tracer/record-exception-span! e {:name "storage/whitelist-error"})
       #{})))
 
-(defn storage-enabled? [app-id]
-  (contains? (whitelist) (str app-id)))
-
-(defn assert-storage-enabled! [app-id]
-  (ex/assert-permitted! :storage-enabled? app-id (storage-enabled? app-id)))
+(defn assert-storage-enabled! []
+  true)

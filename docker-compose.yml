@@ -1,0 +1,84 @@
+services:
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+
+  postgres:
+    image: public.ecr.aws/z9j8u5b3/instant-public:postgres-13
+    ports:
+      - '8890:5432'
+    environment:
+      POSTGRES_PASSWORD: pass
+      POSTGRES_USER: instant
+      POSTGRES_DB: instant
+    volumes:
+      - 'backend-db:/var/lib/postgresql/data'
+    networks:
+      - application
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "instant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=4"
+      - "-c"
+      - "max_wal_senders=4"
+  minio:
+    image: 'minio/minio:latest'
+    ports:
+        - '9000:9000'
+        - '8900:8900'
+    environment:
+        MINIO_ROOT_USER: minio
+        MINIO_ROOT_PASSWORD: password
+        MINIO_DEFAULT_BUCKETS: instant-storage # Probably need to create it manually
+    volumes:
+        - 'minio:/data/minio'
+    networks:
+      - application
+    command: 'minio server /data/minio --console-address ":8900"'
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://localhost:9000/minio/health/live'
+      retries: 3
+      timeout: 5s
+  server:
+    depends_on:
+      - postgres
+      - minio
+    build:
+      context: ./server
+      dockerfile: Dockerfile-dev
+    environment:
+      DATABASE_URL: "postgresql://instant:pass@postgres:5432/instant"
+      NREPL_BIND_ADDRESS: "0.0.0.0"
+      S3_ACCESS_KEY: '${MINIO_ACCESS_KEY}'
+      S3_SECRET_KEY: '${MINIO_SECRET_KEY}'
+      S3_ENDPOINT: http://minio:9000
+      S3_SIGNED_URL_ENDPOINT: http://localhost:9000
+    volumes:
+      - './server:/app'
+    ports:
+      - '8888:8888'
+      - '6005:6005'
+    networks:
+      - application
+
+networks:
+  application:
+    driver: bridge
+volumes:
+  backend-db:
+  minio:
+    driver: local
