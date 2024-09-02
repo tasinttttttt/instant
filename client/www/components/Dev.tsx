@@ -37,7 +37,7 @@ export function Dev() {
     return () => document.removeEventListener('keydown', toggleOpen);
   }, []);
 
-  console.log(open);
+  // console.log(open);
 
   if (!isHydrated || !open) return null;
 

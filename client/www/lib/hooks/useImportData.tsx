@@ -1,14 +1,19 @@
-import { getFilesWithExtension, getFilesWithFilename } from '../importdata';
+import {
+  getFilesInFileFolder,
+  getFilesWithExtension,
+  getFilesWithFilename,
+} from '../import/importHelpers';
 import { Entry } from '@zip.js/zip.js';
 import { useState, useEffect } from 'react';
 
 import { InstantReactWeb, tx } from '@instantdb/react';
 import { getFormattedTableData } from '@/lib/import/formatTable';
 import { getFormattedUserData } from '../import/formatUser';
-import { isArray, values } from 'lodash';
+import { getFormattedElementData } from '../import/formatElement';
+import { forEach, isArray, values } from 'lodash';
 import { errorToast, successToast } from '../toast';
 import {
-  getFormattedElementType,
+  elementTypes,
   getFormattedElementTypes,
 } from '../import/formatElementTypes';
 
@@ -84,7 +89,7 @@ export default function useImportData(
               progress: status.progress + 1,
             };
           });
-          await migrate('users', data, link, db);
+          // await migrate('users', data, link, db);
           setResult((result) => {
             return { ...result, users: [...result.users, data] };
           });
@@ -127,7 +132,7 @@ export default function useImportData(
                 progress: status.progress + 1,
               };
             });
-            await migrate('tables', data, link, db);
+            // await migrate('tables', data, link, db);
             setResult((result) => {
               return { ...result, tables: [...result.tables, data] };
             });
@@ -143,9 +148,6 @@ export default function useImportData(
           });
         }
       }
-    },
-    elements: async () => {
-      console.log('elements');
     },
     elementTypes: async () => {
       const data = getFormattedElementTypes();
@@ -166,7 +168,7 @@ export default function useImportData(
               progress: status.progress + 1,
             };
           });
-          await migrate('elementTypes', entry, null, db);
+          // await migrate('elementTypes', entry, null, db);
 
           setResult((result) => {
             return { ...result, elementTypes: [...result.elementTypes, entry] };
@@ -182,6 +184,49 @@ export default function useImportData(
           };
         });
       }
+    },
+    elements: async () => {
+      Object.keys(elementTypes).map((type) => {
+        console.log(type);
+        const targets = getFilesInFileFolder(input, `${type}.txt`);
+        Object.entries(targets).map(([k, v]) => {
+          console.log(k);
+        });
+        // setStatus((status) => {
+        //   return {
+        //     ...status,
+        //     message: 'in progress',
+        //     namespace: 'elements',
+        //     total: status.total + data.length,
+        //   };
+        // });
+      });
+
+      // const res = await Promise.all(
+      //   data.map(async (entry) => {
+      //     setStatus((status) => {
+      //       return {
+      //         ...status,
+      //         message: 'in progress',
+      //         progress: status.progress + 1,
+      //       };
+      //     });
+      //     await migrate('elementTypes', entry, null, db);
+
+      //     setResult((result) => {
+      //       return { ...result, elementTypes: [...result.elementTypes, entry] };
+      //     });
+      //   })
+      // );
+      // if (res) {
+      //   setStatus((status) => {
+      //     return {
+      //       ...status,
+      //       message: 'finished',
+      //       namespace: 'elementTypes',
+      //     };
+      //   });
+      // }
     },
     elementsToTables: () => {
       console.log('elements to tables');

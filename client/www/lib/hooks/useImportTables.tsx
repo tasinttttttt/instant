@@ -1,4 +1,4 @@
-import { getFilesWithFilename } from '../importdata';
+import { getFilesWithFilename } from '../import/importHelpers';
 import { Entry } from '@zip.js/zip.js';
 import { useState, useEffect } from 'react';
 

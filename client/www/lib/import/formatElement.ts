@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import slugify from '@sindresorhus/slugify';
 import { marked } from 'marked';
 import { Entry, TextWriter } from '@zip.js/zip.js';
-import { decodeContent } from '../importdata';
+import { decodeContent } from '@/lib/import/importHelpers';
 import { id } from '@instantdb/react';
 
 const elementKeys = {

@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import slugify from '@sindresorhus/slugify';
 import { marked } from 'marked';
 import { Entry, TextWriter } from '@zip.js/zip.js';
-import { decodeContent } from '../importdata';
+import { decodeContent } from '@/lib/import/importHelpers';
 import { id } from '@instantdb/react';
 
 const userKeys = {
@@ -72,7 +72,7 @@ export async function getFormattedUserData(file: Entry) {
       .join(' ')
       .trim()
       .replace(/[^a-zA-Z0-9]/g, '') || 'sans-nom';
-  result['email'] = data['email'] || null;
+  result['email'] = (data['email'] && data['email'].trim()) || null;
   result['id'] = id();
   result['enabled_at'] = new Date();
 

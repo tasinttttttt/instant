@@ -1,6 +1,6 @@
 import { id } from '@instantdb/react';
 
-const templates = {
+export const elementTypes = {
   'element-audio': 'audio',
   'element-carte': 'embed',
   'element-citation': 'quote',
@@ -10,7 +10,7 @@ const templates = {
 };
 
 export function getFormattedElementTypes() {
-  return Object.entries(templates).map(([key, value]) => {
+  return Object.entries(elementTypes).map(([key, value]) => {
     return {
       id: id(),
       name: value,

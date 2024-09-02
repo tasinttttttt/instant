@@ -1,13 +1,13 @@
 export const isBrowser = typeof window != 'undefined';
 
-export const isDev = true //process.env.NODE_ENV === 'development';
+export const isDev = true; //process.env.NODE_ENV === 'development';
 
 export const isTouchDevice =
   typeof window !== 'undefined' && 'ontouchstart' in window;
 
 const config = {
   apiURI: process.env.NEXT_PUBLIC_API_URI,
-  websocketURI: process.env.NEXT_PUBLIC_WEBSOCKET_URI
+  websocketURI: process.env.NEXT_PUBLIC_WEBSOCKET_URI,
 };
 
 export default config;
